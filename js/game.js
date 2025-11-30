@@ -36,8 +36,12 @@ class Game {
         this.canvas.style.opacity = '0'; 
         this.container.appendChild(this.canvas);
 
-        ['touchstart', 'touchmove', 'touchend'].forEach(evt => {
-            this.canvas.addEventListener(evt, (e) => e.preventDefault(), { passive: false });
+        // Блокировка стандартных жестов браузера
+        ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(evt => {
+            // Добавляем слушатель на document.body, а не только на canvas
+            document.body.addEventListener(evt, (e) => {
+                e.preventDefault();
+            }, { passive: false });
         });
 
         this.canvasManager = new CanvasManager(this.canvas);
@@ -204,25 +208,43 @@ class Game {
         this.screens.intro = new IntroScreen(this.ctx, {
             virtualWidth: this.virtualWidth,
             virtualHeight: this.virtualHeight,
-            // Скроллер уже создан в init(), можно передавать
             bgScroller: this.bgScroller
         });
 
         this.inputManager.registerScreen('intro', (key) => {
             if (this.isPaused) return;
-            const nextScreen = this.screens.intro.handleInput(key);
+            const action = this.screens.intro.handleInput(key);
             
-            if (nextScreen === 'start') {
-                if (!this.tutorialShown) {
-                    this.tutorialShown = true;
-                    this.switchScreen('tutorial');
+            // Если игрок нажал "Старт" (или Рестарт)
+            if (action === 'start') {
+                // Если это был экран Game Over — показываем рекламу ПЕРЕД стартом
+                if (this.screens.intro.isGameOver) {
+                     const startCallback = () => {
+                        this.gameState.reset(); // Сбрасываем очки
+                        this.switchScreen('game');
+                     };
+                     
+                     // Показываем рекламу
+                     try {
+                        if (window.showAd) window.showAd(startCallback);
+                        else startCallback();
+                     } catch(e) {
+                        startCallback();
+                     }
                 } else {
-                    this.switchScreen('game');
+                    // Если это первый запуск игры (не Game Over) - просто запускаем
+                    if (!this.tutorialShown) {
+                        this.tutorialShown = true;
+                        this.switchScreen('tutorial');
+                    } else {
+                        this.gameState.reset();
+                        this.switchScreen('game');
+                    }
                 }
                 return;
             }
-            if (nextScreen) this.switchScreen(nextScreen);
-            return nextScreen;
+            if (action) this.switchScreen(action);
+            return action;
         });
     }
 
@@ -296,23 +318,16 @@ class Game {
     }
 
     handleGameOver() {
-        const afterAdCallback = () => {
-            this.screens.intro = new IntroScreen(this.ctx, {
-                virtualWidth: this.virtualWidth,
-                virtualHeight: this.virtualHeight,
-                bgScroller: this.bgScroller,
-                isGameOver: true,
-                finalScore: this.gameState.score,
-                highScore: this.gameState.highScore
-            });
-            this.switchScreen('intro');
-        };
-        try {
-            if (window.showAd) window.showAd(afterAdCallback);
-            else afterAdCallback();
-        } catch (e) {
-            afterAdCallback();
-        }
+        // 1. Сначала просто показываем экран проигрыша (БЕЗ РЕКЛАМЫ)
+        this.screens.intro = new IntroScreen(this.ctx, {
+            virtualWidth: this.virtualWidth,
+            virtualHeight: this.virtualHeight,
+            bgScroller: this.bgScroller,
+            isGameOver: true, // Флаг, что это экран смерти
+            finalScore: this.gameState.score,
+            highScore: this.gameState.highScore
+        });
+        this.switchScreen('intro');
     }
 
     update(timestamp) {
