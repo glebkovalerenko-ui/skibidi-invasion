@@ -28,8 +28,6 @@
             height: 100%;
             overflow: hidden;
             background-color: #000000;
-            
-            /* ВАЖНО: Блокировка свайпа для обновления и скролла */
             overscroll-behavior: none;
             touch-action: none;
             
@@ -52,45 +50,130 @@
             -webkit-user-drag: none;
         }
 
+        /* Стиль для кнопки-эмулятора рекламы (только локально) */
+        #fake-ad {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            flex-direction: column;
+            color: white;
+            font-family: 'Press Start 2P', sans-serif;
+        }
+        #fake-ad button {
+            padding: 20px 40px;
+            font-size: 20px;
+            cursor: pointer;
+            background: #00ff00;
+            border: none;
+            font-family: inherit;
+            margin-top: 20px;
+        }
+
         .press-start-font { font-family: 'Press Start 2P', cursive; }
     </style>
 </head>
 <body>
     <canvas id="gameCanvas" oncontextmenu="return false;" ondragstart="return false;"></canvas>
 
+    <!-- Фейковая реклама для локального теста -->
+    <div id="fake-ad">
+        <div>[LOCALHOST AD SIMULATION]</div>
+        <button id="close-fake-ad">CLOSE AD</button>
+    </div>
+
     <script>
         window.ysdk = null;
+        
         try {
             YaGames.init().then(ysdk => {
                 window.ysdk = ysdk;
+                console.log('YSDK initialized');
+            }).catch(e => {
+                console.warn('YSDK init failed (Localhost or Offline)', e);
             });
         } catch(e) {
-            console.warn('Yandex SDK failed to load (Offline mode?)');
+            console.warn('YSDK global init error', e);
         }
 
+        // --- ЛОКАЛЬНАЯ ЭМУЛЯЦИЯ ---
+        const fakeAdOverlay = document.getElementById('fake-ad');
+        const closeFakeAdBtn = document.getElementById('close-fake-ad');
+        let currentAdCallback = null;
+
+        closeFakeAdBtn.addEventListener('click', () => {
+            fakeAdOverlay.style.display = 'none';
+            if (window.game) {
+                window.game.isAdPlaying = false;
+                window.game.onResume();
+            }
+            if (currentAdCallback) currentAdCallback();
+        });
+        // ---------------------------
+
         window.showAd = function(onCloseCallback) {
-            if (!window.ysdk) {
-                if (onCloseCallback) onCloseCallback();
+            console.log('Ad requested...');
+
+            // 1. ПРОВЕРКА НА LOCALHOST
+            const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            
+            if (isLocalhost || !window.ysdk) {
+                console.log('Localhost: Showing fake ad');
+                // Локально ставим на паузу сразу, т.к. "реклама" (кнопка) появится мгновенно
+                if (window.game) {
+                    window.game.isAdPlaying = true;
+                    window.game.onPause();
+                }
+                currentAdCallback = onCloseCallback;
+                fakeAdOverlay.style.display = 'flex';
                 return;
             }
-            window.ysdk.adv.showFullscreenAdv({
-                callbacks: {
-                    onOpen: function() {
-                        if (window.game && window.game.onPause) window.game.onPause();
-                    },
-                    onClose: function(wasShown) {
-                        if (window.game && window.game.onResume) window.game.onResume();
-                        if (onCloseCallback) onCloseCallback();
-                    },
-                    onError: function(error) {
-                        if (window.game && window.game.onResume) window.game.onResume();
-                        if (onCloseCallback) onCloseCallback();
+
+            // 2. РЕАЛЬНЫЙ SDK
+            // ВАЖНО: Мы НЕ ставим игру на паузу здесь! 
+            // Мы ждем события onOpen. Если реклама не откроется (из-за лимитов),
+            // пауза не сработает, и звук не сломается.
+            try {
+                window.ysdk.adv.showFullscreenAdv({
+                    callbacks: {
+                        onOpen: function() {
+                            console.log('Ad OPENED - Pausing Game');
+                            // Вот теперь точно глушим звук
+                            if (window.game) {
+                                window.game.isAdPlaying = true;
+                                window.game.onPause();
+                            }
+                        },
+                        onClose: function(wasShown) {
+                            console.log('Ad CLOSED - Resuming Game');
+                            // Снимаем флаг и включаем звук, ТОЛЬКО если он был выключен
+                            if (window.game && window.game.isAdPlaying) {
+                                window.game.isAdPlaying = false;
+                                window.game.onResume();
+                            }
+                            if (onCloseCallback) onCloseCallback();
+                        },
+                        onError: function(error) {
+                            console.warn('Ad ERROR:', error);
+                            if (window.game && window.game.isAdPlaying) {
+                                window.game.isAdPlaying = false;
+                                window.game.onResume();
+                            }
+                            if (onCloseCallback) onCloseCallback();
+                        }
                     }
-                }
-            });
+                });
+            } catch (e) {
+                console.error('Critical Ad Error:', e);
+                if (onCloseCallback) onCloseCallback();
+            }
         };
 
         window.addEventListener('error', function(event) {
+            if (event.error && event.error.message && event.error.message.includes('No parent')) return;
             console.error('GAME ERROR:', event.error);
         });
         

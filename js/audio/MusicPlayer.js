@@ -14,11 +14,9 @@ class MusicPlayer {
 
         this.currentSource = null;
         
-        // Состояние ИГРОВОЙ музыки
         this.gameTrackIndex = 0;
-        this.gameCursor = 0; // Сохраненная позиция (сек)
+        this.gameCursor = 0; 
         
-        // Служебные
         this.lastStartTime = 0;
         this.isPlaying = false;
         this.currentMode = 'none'; // 'menu', 'game', 'none'
@@ -34,8 +32,15 @@ class MusicPlayer {
     }
 
     stopCurrent() {
+        if (this.isPlaying && this.currentSource) {
+             const elapsed = this.audioContext.currentTime - this.lastStartTime;
+             if (elapsed > 0) {
+                 this.gameCursor += elapsed;
+             }
+        }
+
         if (this.currentSource) {
-            this.currentSource.onended = null; // Важно: убиваем старые колбэки
+            this.currentSource.onended = null;
             try {
                 this.currentSource.stop();
                 this.currentSource.disconnect();
@@ -45,72 +50,68 @@ class MusicPlayer {
         this.isPlaying = false;
     }
 
-    // --- МЕНЮ (Геймовер / Интро) ---
-    playMenuMusic() {
-        // Если мы переключаемся ИЗ игры В меню -> сохраняем прогресс игры
-        if (this.currentMode === 'game' && this.isPlaying) {
-            const elapsed = this.audioContext.currentTime - this.lastStartTime;
-            this.gameCursor += elapsed;
-            console.log(`MusicPlayer: Paused game music at ${this.gameCursor.toFixed(2)}s`);
-        }
+    // Сброс музыки для новой игры
+    resetGameMusic() {
+        this.gameTrackIndex = 0;
+        this.gameCursor = 0;
+        this.shuffleGameTracks();
+    }
 
-        // Переключаем режим
-        this.currentMode = 'menu';
+    playMenuMusic() {
         this.stopCurrent();
+        this.currentMode = 'menu';
 
         const buffer = this.audioManager.getMusicBuffer(this.menuTrackKey);
         if (!buffer) return;
 
         this.playBuffer(buffer, 0, true);
-        console.log('MusicPlayer: Playing Menu Theme');
     }
 
-    // --- ИГРА ---
     playGameMusic() {
-        // Если мы уже играем игру, ничего не делаем (защита от двойного запуска)
         if (this.currentMode === 'game' && this.isPlaying) return;
-
+        
+        this.stopCurrent(); 
         this.currentMode = 'game';
-        this.stopCurrent();
 
+        this._playNextGameTrack();
+    }
+
+    _playNextGameTrack() {
         const key = this.gameTrackKeys[this.gameTrackIndex];
         const buffer = this.audioManager.getMusicBuffer(key);
         
         if (!buffer) return;
 
-        // Если сохраненное время больше длины трека, переходим к следующему
         if (this.gameCursor >= buffer.duration) {
             this.gameCursor = 0;
             this.gameTrackIndex = (this.gameTrackIndex + 1) % this.gameTrackKeys.length;
-            this.playGameMusic(); // Рекурсия для следующего трека
+            this._playNextGameTrack();
             return;
         }
 
-        console.log(`MusicPlayer: Resuming Game Track ${this.gameTrackIndex} at ${this.gameCursor.toFixed(2)}s`);
-        
         this.playBuffer(buffer, this.gameCursor, false, () => {
-            // Трек кончился сам
             this.gameCursor = 0;
             this.gameTrackIndex = (this.gameTrackIndex + 1) % this.gameTrackKeys.length;
             
-            // Запускаем следующий, ТОЛЬКО если мы все еще в режиме игры
             if (this.currentMode === 'game') {
-                this.playGameMusic();
+                this._playNextGameTrack();
             }
         });
     }
 
     playBuffer(buffer, startTimeOffset, loop, onEndedCallback = null) {
+        const safeOffset = startTimeOffset % buffer.duration;
+
         this.currentSource = this.audioContext.createBufferSource();
         this.currentSource.buffer = buffer;
         this.currentSource.loop = loop;
         this.currentSource.connect(this.gainNode);
 
         this.currentSource.onended = () => {
+            this.isPlaying = false;
             if (onEndedCallback) onEndedCallback();
         };
 
-        const safeOffset = startTimeOffset % buffer.duration;
         this.currentSource.start(0, safeOffset);
         
         this.lastStartTime = this.audioContext.currentTime;
@@ -118,17 +119,10 @@ class MusicPlayer {
     }
 
     stop() {
-        // Вызывается при сворачивании вкладки (Pause)
-        if (this.currentMode === 'game' && this.isPlaying) {
-            const elapsed = this.audioContext.currentTime - this.lastStartTime;
-            this.gameCursor += elapsed;
-        }
         this.stopCurrent();
-        console.log('MusicPlayer: Stopped (System Pause)');
     }
     
     resume() {
-        // Вызывается при разворачивании (Resume)
         if (this.currentMode === 'game') this.playGameMusic();
         else if (this.currentMode === 'menu') this.playMenuMusic();
     }

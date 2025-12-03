@@ -36,12 +36,8 @@ class Game {
         this.canvas.style.opacity = '0'; 
         this.container.appendChild(this.canvas);
 
-        // Блокировка стандартных жестов браузера
         ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(evt => {
-            // Добавляем слушатель на document.body, а не только на canvas
-            document.body.addEventListener(evt, (e) => {
-                e.preventDefault();
-            }, { passive: false });
+            document.body.addEventListener(evt, (e) => e.preventDefault(), { passive: false });
         });
 
         this.canvasManager = new CanvasManager(this.canvas);
@@ -52,9 +48,7 @@ class Game {
         
         try {
             this.crtEffect = new CRTEffect(this.canvas, this.container, this.audioManager, quality);
-            if (isMobile) {
-                console.log("Mobile detected: Optimized CRT enabled (50% scale)");
-            }
+            if (isMobile) console.log("Mobile detected: Optimized CRT enabled");
         } catch (e) {
             console.warn("CRT Shader disabled by error", e);
             this.crtEffect = null;
@@ -70,9 +64,6 @@ class Game {
         
         window.game = this;
         
-        // ❌ УБРАНО: bgScroller здесь создавать нельзя, картинки еще не загружены!
-        // this.bgScroller = ... (перенесено в init)
-
         this.screens = {
             startup: new StartupScreen(this.ctx, {
                 virtualWidth: this.virtualWidth,
@@ -101,6 +92,7 @@ class Game {
         
         this.gameReadySent = false;
         this.isPaused = false;
+        this.isAdPlaying = false; 
         this.lastTime = 0;
 
         const resizeHandler = () => this.resize();
@@ -124,8 +116,10 @@ class Game {
     setupAudioUnlock() {
         const unlockAudio = () => {
             if (this.audioManager) {
+                // Пытаемся разбудить контекст при любом взаимодействии
                 this.audioManager.resumeContext();
                 if (this.audioManager.context.state === 'running') {
+                    // Если успешно - можно убирать слушатели
                     ['touchstart', 'touchend', 'click', 'keydown'].forEach(evt =>
                         document.body.removeEventListener(evt, unlockAudio)
                     );
@@ -149,7 +143,7 @@ class Game {
                         setLanguage(ysdk.environment.i18n.lang);
                     }
                 } catch (e) {
-                    console.warn('YSDK Init failed (Offline?)', e);
+                    console.warn('YSDK Init failed (possibly localhost)', e);
                 }
             }
 
@@ -162,16 +156,11 @@ class Game {
                 assets.sprites.logoRu,
                 assets.sprites.logoEn,
                 ...assets.backgrounds
-            ];
-            
-            const validImages = imagesToLoad.filter(url => url);
+            ].filter(url => url);
 
-            // 1. Ждем загрузку картинок
-            await AssetLoader.loadAll(validImages);
-            console.log(`Assets loaded: ${validImages.length} files`);
+            await AssetLoader.loadAll(imagesToLoad);
+            console.log(`Assets loaded`);
 
-            // 2. ✅ ТЕПЕРЬ МОЖНО СОЗДАВАТЬ SCROLLER
-            // Картинки уже в кэше, скроллер их увидит
             this.bgScroller = new ImageBackgroundScroller(this.ctx, {
                 virtualWidth: this.virtualWidth,
                 virtualHeight: this.virtualHeight,
@@ -184,7 +173,6 @@ class Game {
                 await Promise.race([cloudPromise, timeoutPromise]);
             }
 
-            // 3. Инициализируем экраны (они передадут bgScroller внутрь себя)
             this.initScreens();
             
             if (window.ysdk && window.ysdk.features && window.ysdk.features.LoadingAPI) {
@@ -215,30 +203,40 @@ class Game {
             if (this.isPaused) return;
             const action = this.screens.intro.handleInput(key);
             
-            // Если игрок нажал "Старт" (или Рестарт)
             if (action === 'start') {
-                // Если это был экран Game Over — показываем рекламу ПЕРЕД стартом
+                // ВАЖНО: Сразу же будим аудио-контекст, пока мы внутри события клика/клавиши.
+                // Это решает ошибку "Autoplay blocked".
+                if (this.audioManager) {
+                    this.audioManager.resumeContext().catch(() => {});
+                }
+
+                const startGame = () => {
+                    // Останавливаем старую музыку ПЕРЕД сбросом
+                    if (this.musicPlayer) this.musicPlayer.stop();
+                    
+                    this.gameState.reset();
+                    if (this.musicPlayer) this.musicPlayer.resetGameMusic();
+                    this.switchScreen('game');
+                };
+
                 if (this.screens.intro.isGameOver) {
-                     const startCallback = () => {
-                        this.gameState.reset(); // Сбрасываем очки
-                        this.switchScreen('game');
-                     };
-                     
-                     // Показываем рекламу
+                     // Показ рекламы
                      try {
-                        if (window.showAd) window.showAd(startCallback);
-                        else startCallback();
+                        if (window.showAd) {
+                            window.showAd(startGame);
+                        } else {
+                            startGame();
+                        }
                      } catch(e) {
-                        startCallback();
+                        startGame();
                      }
                 } else {
-                    // Если это первый запуск игры (не Game Over) - просто запускаем
+                    // Первый запуск
                     if (!this.tutorialShown) {
                         this.tutorialShown = true;
                         this.switchScreen('tutorial');
                     } else {
-                        this.gameState.reset();
-                        this.switchScreen('game');
+                        startGame();
                     }
                 }
                 return;
@@ -264,14 +262,13 @@ class Game {
     }
 
     onResume() {
+        if (this.isAdPlaying) return; 
         if (!this.isPaused) return;
+        
         this.isPaused = false;
         if (this.audioManager) this.audioManager.unmute();
-        if (this.musicPlayer) {
-            if (this.currentScreen === 'game') this.musicPlayer.playGameMusic();
-            else if (this.currentScreen === 'intro') this.musicPlayer.playMenuMusic();
-            else if (this.currentScreen === 'tutorial') this.musicPlayer.playMenuMusic();
-        }
+        
+        if (this.musicPlayer) this.musicPlayer.resume();
         if (this.screens[this.currentScreen]?.onResume) this.screens[this.currentScreen].onResume();
         this.lastTime = performance.now();
     }
@@ -280,7 +277,10 @@ class Game {
         if (this.screens[this.currentScreen]?.cleanup) this.screens[this.currentScreen].cleanup();
 
         if (screenName === 'intro') {
-            if (this.audioManager && !this.isPaused) this.audioManager.resumeContext().catch(e => {});
+            if (this.audioManager && !this.isPaused) {
+                this.audioManager.unmute().catch(e => {});
+                this.audioManager.resumeContext().catch(e => {});
+            }
             this.musicPlayer.playMenuMusic();
         }
 
@@ -297,7 +297,11 @@ class Game {
         }
 
         if (screenName === 'game') {
-            if (this.audioManager && !this.isPaused) this.audioManager.resumeContext().catch(e => {});
+            if (this.audioManager && !this.isPaused) {
+                this.audioManager.unmute().catch(e => {}); 
+                this.audioManager.resumeContext().catch(e => {});
+            }
+
             this.screens.game = new GameScreen(this.ctx, {
                 virtualWidth: this.virtualWidth,
                 virtualHeight: this.virtualHeight,
@@ -318,12 +322,11 @@ class Game {
     }
 
     handleGameOver() {
-        // 1. Сначала просто показываем экран проигрыша (БЕЗ РЕКЛАМЫ)
         this.screens.intro = new IntroScreen(this.ctx, {
             virtualWidth: this.virtualWidth,
             virtualHeight: this.virtualHeight,
             bgScroller: this.bgScroller,
-            isGameOver: true, // Флаг, что это экран смерти
+            isGameOver: true,
             finalScore: this.gameState.score,
             highScore: this.gameState.highScore
         });
